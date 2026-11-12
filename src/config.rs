@@ -122,10 +122,13 @@ impl Default for CoreConfig {
             profiles_per_instance: 1024,
             base_qnum: qnum(),
             nft_table: nft_table(),
-            nfqws2_path: nfqws2_path("/opt/zapret2"),
             request_timeout: 2,
-            // FIXME: zapret_base is hardcoded; add CLI option to override
-            zapret_base: "/opt/zapret2".to_string(),
+            // Android/ported hosts: base dir is not /opt/zapret2 (rootfs is
+            // read-only there). Env override until upstream grows a CLI flag.
+            zapret_base: std::env::var("BCW_ZAPRET_BASE")
+                .unwrap_or_else(|_| "/opt/zapret2".to_string()),
+            nfqws2_path: nfqws2_path(&std::env::var("BCW_ZAPRET_BASE")
+                .unwrap_or_else(|_| "/opt/zapret2".to_string())),
             nfqws2_uid: detect_nobody_uid(),
             nfqws2_gid: detect_nobody_gid(),
         }
@@ -284,6 +287,12 @@ fn detect_nobody_gid() -> u32 {
 /// оставляет бинарь прямо там. Свой перебор `binaries/linux-*` промахивался
 /// мимо всего, что не релиз, — поэтому не выбираем, а берём выбранное.
 pub fn nfqws2_path(zapret_base: &str) -> String {
+    // Exact binary path wins (Android: engine lives outside zapret_base).
+    if let Ok(p) = std::env::var("BCW_NFQWS2") {
+        if !p.is_empty() {
+            return p;
+        }
+    }
     format!("{zapret_base}/nfq2/nfqws2")
 }
 

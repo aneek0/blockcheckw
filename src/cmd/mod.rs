@@ -689,7 +689,13 @@ pub async fn restore_service(mgr: &ServiceManager, con: &blockcheckw::ui::Consol
 
 // ── Instance lock ───────────────────────────────────────────────────────────
 
-const LOCK_PATH: &str = "/var/run/blockcheckw.lock";
+fn lock_path() -> String {
+    // Android: /var/run does not exist and rootfs is read-only.
+    match std::env::var("BCW_LOCK_PATH") {
+        Ok(p) if !p.is_empty() => p,
+        _ => "/var/run/blockcheckw.lock".to_string(),
+    }
+}
 
 /// Acquire an exclusive lock to prevent parallel blockcheckw execution.
 /// Opaque lock handle — keeps the flock alive until dropped.
@@ -701,21 +707,22 @@ pub fn acquire_instance_lock() -> InstanceLock {
     use nix::fcntl::{Flock, FlockArg};
     use std::io::Write;
 
+    let lock_path = lock_path();
+
     // No truncate before flock — truncate would create a new file description
     // and bypass the existing lock held by another process
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(LOCK_PATH);
+        .open(&lock_path);
 
     let file = match file {
         Ok(f) => f,
         Err(e) => {
             eprintln!(
-                "  {} cannot create lock file {}: {e}",
+                "  {} cannot create lock file {lock_path}: {e}",
                 style("ERROR:").red().bold(),
-                LOCK_PATH,
             );
             std::process::exit(1);
         }
@@ -726,7 +733,7 @@ pub fn acquire_instance_lock() -> InstanceLock {
         Ok(lock) => lock,
         Err((inner_file, _err)) => {
             // Lock held by another instance — wait (supports pipe: universal | check)
-            let held_pid = std::fs::read_to_string(LOCK_PATH).unwrap_or_default();
+            let held_pid = std::fs::read_to_string(&lock_path).unwrap_or_default();
             let held_pid = held_pid.trim();
             eprintln!(
                 "  {} waiting for another blockcheckw instance (PID {held_pid}) to finish...",
