@@ -257,9 +257,9 @@ pub trait NftRunSync {
 
 /// Настоящий nft: один батч — один `nft -f -`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SystemNft;
+pub struct NftBackend;
 
-impl NftRun for SystemNft {
+impl NftRun for NftBackend {
     async fn run(&self, batch: NftBatch) -> Result<(), BlockcheckError> {
         let result =
             run_process_stdin(&["nft", "-f", "-"], &batch.script(), NFT_TIMEOUT_MS).await?;
@@ -297,14 +297,14 @@ impl NftRun for SystemNft {
 
 /// Тот же nft для аварийных путей: без tokio, без ожидания рантайма.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct SystemNftSync;
+pub struct NftSyncBackend;
 
 /// Сколько ждать nft в аварийном пути. Ограничение обязательно: panic-хук без
 /// таймаута уводил роутеры в перезагрузку (a1f98f5).
 const SYNC_TIMEOUT_MS: u64 = 3_000;
 const SYNC_POLL_MS: u64 = 100;
 
-impl NftRunSync for SystemNftSync {
+impl NftRunSync for NftSyncBackend {
     fn run(&self, batch: NftBatch) -> Result<(), BlockcheckError> {
         use std::io::{Read, Write};
 
@@ -500,5 +500,52 @@ mod tests {
             name: "blockcheckw".to_string(),
         };
         assert_eq!(table.marker().name(), "blockcheckw");
+    }
+}
+
+// ── Диспетчеры бэкенда ──────────────────────────────────────────────────────
+
+/// Имя, которое используют все вызовы в крейте. Это НЕ конкретный nft:
+/// `BCW_FIREWALL=iptables` переключает на iptables-legacy бэкенд (ядра без
+/// CONFIG_NF_TABLES). Конкретные исполнители — [`NftBackend`] и
+/// [`crate::firewall::iptables::SystemIptables`].
+pub struct SystemNft;
+
+impl NftRun for SystemNft {
+    async fn run(&self, batch: NftBatch) -> Result<(), BlockcheckError> {
+        if crate::firewall::iptables::enabled() {
+            NftRun::run(&crate::firewall::iptables::SystemIptables, batch).await
+        } else {
+            NftRun::run(&NftBackend, batch).await
+        }
+    }
+
+    async fn table_names(&self) -> Result<Vec<(String, String)>, BlockcheckError> {
+        if crate::firewall::iptables::enabled() {
+            NftRun::table_names(&crate::firewall::iptables::SystemIptables).await
+        } else {
+            NftRun::table_names(&NftBackend).await
+        }
+    }
+
+    async fn dump_foreign(&self, table: &ForeignTable) -> Result<String, BlockcheckError> {
+        if crate::firewall::iptables::enabled() {
+            NftRun::dump_foreign(&crate::firewall::iptables::SystemIptables, table).await
+        } else {
+            NftRun::dump_foreign(&NftBackend, table).await
+        }
+    }
+}
+
+/// Sync-диспетчер для panic-хуков и аварийных путей.
+pub struct SystemNftSync;
+
+impl NftRunSync for SystemNftSync {
+    fn run(&self, batch: NftBatch) -> Result<(), BlockcheckError> {
+        if crate::firewall::iptables::enabled() {
+            NftRunSync::run(&crate::firewall::iptables::SystemIptables, batch)
+        } else {
+            NftRunSync::run(&NftSyncBackend, batch)
+        }
     }
 }

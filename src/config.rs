@@ -208,15 +208,31 @@ mod parallelism_tests {
         assert_eq!(c.profiles_per_instance, 1024);
     }
 }
-
 impl CoreConfig {
     /// Окружение для запуска движка.
     pub fn nfqws2_env(&self) -> crate::nfqws2::plan::Env {
+        // Lua-скрипты: явный BCW_LUA_DIR, затем рядом с движком, затем
+        // <zapret_base>/lua. Движок дропает привилегии до nobody — каталог
+        // обязан быть читаемым им (Android-модули: копия в /data/local/tmp).
+        let lua_dir = std::env::var("BCW_LUA_DIR")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                let engine_dir = std::path::Path::new(&self.nfqws2_path)
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| std::path::PathBuf::from(&self.zapret_base));
+                [engine_dir, std::path::Path::new(&self.zapret_base).join("lua")]
+                    .into_iter()
+                    .find(|d| d.join("zapret-lib.lua").is_file())
+                    .unwrap_or_else(|| std::path::Path::new(&self.zapret_base).join("lua"))
+            });
         crate::nfqws2::plan::Env {
             binary: self.nfqws2_path.clone().into(),
             lua: vec![
-                format!("{}/lua/zapret-lib.lua", self.zapret_base).into(),
-                format!("{}/lua/zapret-antidpi.lua", self.zapret_base).into(),
+                lua_dir.join("zapret-lib.lua").into(),
+                lua_dir.join("zapret-antidpi.lua").into(),
             ],
             uid: self.nfqws2_uid,
             gid: self.nfqws2_gid,

@@ -793,25 +793,41 @@ pub fn check_prerequisites(con: &blockcheckw::ui::Console) -> Prerequisites {
         ok = false;
     }
 
-    // nft binary
-    if which(nft::BINARY) {
-        con.ok(nft::BINARY);
+    // Firewall-бэкенд: iptables (BCW_FIREWALL=iptables) или nft по умолчанию.
+    // Проверяем бинарь и читаемость рулсета именно выбранного бэкенда.
+    let fw_bin = if blockcheckw::firewall::iptables::enabled() {
+        "iptables-restore"
     } else {
-        con.error("nft not found in PATH");
-        con.println("       install nftables: apt install nftables / opkg install nftables");
+        nft::BINARY
+    };
+    if which(fw_bin) {
+        con.ok(fw_bin);
+    } else {
+        con.error(&format!("{fw_bin} not found in PATH"));
+        con.println(&format!(
+            "       install {}: iptables/nftables (or unset BCW_FIREWALL)",
+            if fw_bin == "iptables-restore" {
+                "iptables"
+            } else {
+                "nftables"
+            }
+        ));
         ok = false;
     }
 
-    // nft (наличие таблиц читаем, а не пытаемся судить про очереди —
-    // `is_available_sync()` зовёт `nft list tables` и про NFQUEUE ничего не
-    // знает; за очередь теперь по-настоящему ручается дымовой запуск ниже)
+    // Читаемость рулсета тем же способом, каким его будет читать скан.
     if ok {
-        if nft::is_available_sync() {
-            con.ok("nft");
+        let usable = if blockcheckw::firewall::iptables::enabled() {
+            blockcheckw::firewall::iptables::is_available_sync()
         } else {
-            con.error("nft is not usable (`nft list tables` failed)");
+            nft::is_available_sync()
+        };
+        if usable {
+            con.ok("firewall ruleset readable");
+        } else {
+            con.error("firewall backend is not usable (ruleset read failed)");
             con.println(
-                "       check that nftables is installed and you have permission to run it",
+                "       check that the firewall is installed and you have permission to run it",
             );
             ok = false;
         }
