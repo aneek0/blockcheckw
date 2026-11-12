@@ -180,17 +180,17 @@ fn translate_rule(chain: &str, rest: &str) -> Result<Vec<String>, BlockcheckErro
             .map(str::trim)
             .collect::<Vec<_>>()
             .join(" ");
-        // nft-матч: `A == 0 B == B` — AND. Биты require_clear обязаны быть
-        // сняты, require_set — стоять. Один mark-матч с общей маской покрывает
-        // оба условия только при смежных битах раскладки; раскладка
-        // провоцирует несмежность (desync=28, worker=29), поэтому честный
-        // перевод — два mark-условия до первого -j.
-        let set_m = format!("0x{require_set:X}");
-        let clear_m = format!("0x{require_clear:X}");
-        let base = format!("-A {chain} -p tcp --dport {port} -d {ip_list}");
+        // nft-матч `A == 0 B == B` — AND. Один матч `--mark V/M` покрывает
+        // оба условия при любой раскладке бит: M = set|clear, V = set —
+        // «set стоит, clear снят». Два отдельных -m mark в одном правиле
+        // iptables-legacy (v1.8.11, Android) отвергает: «--mark can only be
+        // used once».
+        let mask = format!("0x{:X}", require_set | require_clear);
+        let val = format!("0x{require_set:X}");
+        let base = format!("-A {chain} -p tcp --dport {port} -d {ip_list} -m mark --mark {val}/{mask}");
         return Ok(vec![
-            format!("{base} -m mark --mark {set_m}/{set_m} ! --mark {clear_m}/{clear_m} -j CONNMARK --or-mark 0x{ct_set_or:X}"),
-            format!("{base} -m mark --mark {set_m}/{set_m} ! --mark {clear_m}/{clear_m} -j NFQUEUE --queue-num {q}"),
+            format!("{base} -j CONNMARK --or-mark 0x{ct_set_or:X}"),
+            format!("{base} -j NFQUEUE --queue-num {q}"),
         ]);
     }
 
@@ -541,14 +541,16 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_out_becomes_two_rules_with_both_guards() {
+    fn dispatch_out_becomes_two_rules_with_single_combined_mark() {
         let doc = doc_of(&s(&[concat!(
             "add rule inet blockcheckw postnat meta nfproto ipv4 tcp dport 443 ",
             "mark and 0x10000000 == 0 mark and 0x20000000 == 0x20000000 ip daddr { 157.240.1.35, 157.240.2.35 } ",
             "ct original packets 1-10 ct mark set mark or 0x10000000 queue num 300"
         )]));
+        // Один mark-матч: value=set, mask=set|clear. Второй --mark в правиле
+        // iptables-legacy запрещён (Android v1.8.11).
         let base = "-A blockcheckw_postnat -p tcp --dport 443 -d 157.240.1.35 157.240.2.35 \
-                    -m mark --mark 0x20000000/0x20000000 ! --mark 0x10000000/0x10000000";
+                    -m mark --mark 0x20000000/0x30000000";
         assert!(
             doc.contains(&format!("{base} -j CONNMARK --or-mark 0x10000000")),
             "{doc}"
@@ -556,6 +558,10 @@ mod tests {
         assert!(
             doc.contains(&format!("{base} -j NFQUEUE --queue-num 300")),
             "{doc}"
+        );
+        assert!(
+            !doc.contains("! --mark"),
+            "второй --mark в одном правиле отвергается restore: {doc}"
         );
     }
 

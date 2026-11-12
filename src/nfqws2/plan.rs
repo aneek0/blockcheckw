@@ -115,15 +115,40 @@ impl Plan {
                 .map(|p| format!("--lua-init=@{}", p.to_string_lossy())),
         );
 
+        // Глобальные аргументы стратегий (blob/lua-init) поднимаются в общую
+        // секцию: движок фаталится на дубликате имени blob, а внешний корпус
+        // (ZDT-D) объявляет одни и те же blob'ы во многих стратегиях.
+        let mut seen_globals: std::collections::BTreeSet<String> = Default::default();
+        for profile in &self.profiles {
+            for arg in &profile.args {
+                if is_global_engine_arg(arg) && seen_globals.insert(arg.clone()) {
+                    argv.push(arg.clone());
+                }
+            }
+        }
+
         for (i, profile) in self.profiles.iter().enumerate() {
             if i > 0 {
                 argv.push("--new".to_string());
             }
             argv.push(profile.mark.filter_arg());
-            argv.extend(profile.args.iter().cloned());
+            argv.extend(
+                profile
+                    .args
+                    .iter()
+                    .filter(|a| !is_global_engine_arg(a))
+                    .cloned(),
+            );
         }
         argv
     }
+}
+
+/// Аргумент, относящийся к процессу движка, а не к профилю: будучи оставлен в
+/// профиле, он молча действует на все (lua-init) или ломает запуск дубликатом
+/// (blob). Остальные фильтры/десинки остаются там, где их записал автор стратегии.
+fn is_global_engine_arg(arg: &str) -> bool {
+    arg.starts_with("--blob=") || arg.starts_with("--lua-init=@")
 }
 
 /// Как в командной строке движка пишется НОМЕР ОЧЕРЕДИ.
@@ -259,6 +284,37 @@ mod tests {
         let last_mark = plan.profiles().last().expect("план непуст").mark.index();
         assert_eq!(last_mark, 65535);
         assert_eq!(u32::from(last_mark), PROFILE_MASK);
+    }
+
+    /// Дубликат blob в разных профилях фатален движку: hoisting обязан
+    /// оставить одну копию в глобальной секции.
+    #[test]
+    fn duplicate_blobs_across_profiles_are_hoisted_once() {
+        let argv = plan_of(&[
+            "--lua-desync=fake:blob=b1 --blob=b1:@/x.bin",
+            "--lua-desync=fake:blob=b1 --blob=b1:@/x.bin",
+        ])
+        .argv(&env());
+        assert_eq!(argv.iter().filter(|a| *a == "--blob=b1:@/x.bin").count(), 1);
+        // Глобальный blob стоит ДО первого --new.
+        let first_new = argv.iter().position(|a| *a == "--new").expect("есть --new");
+        assert!(argv[..first_new].contains(&"--blob=b1:@/x.bin".to_string()));
+        // И не остаётся внутри профилей.
+        assert!(!argv[first_new..].contains(&"--blob=b1:@/x.bin".to_string()));
+    }
+
+    /// Стратегия со своим lua-init: он поднимается в глобальную секцию,
+    /// а не дублируется в каждом профиле.
+    #[test]
+    fn strategy_lua_init_is_hoisted_out_of_profiles() {
+        let argv = plan_of(&[
+            "--lua-init=@/z.lua --lua-desync=send:repeats=2",
+            "--lua-init=@/z.lua --lua-desync=syndata:blob=p",
+        ])
+        .argv(&env());
+        assert_eq!(argv.iter().filter(|a| *a == "--lua-init=@/z.lua").count(), 1);
+        let first_new = argv.iter().position(|a| *a == "--new").expect("есть --new");
+        assert!(argv[..first_new].contains(&"--lua-init=@/z.lua".to_string()));
     }
 }
 

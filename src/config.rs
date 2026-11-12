@@ -211,33 +211,51 @@ mod parallelism_tests {
 impl CoreConfig {
     /// Окружение для запуска движка.
     pub fn nfqws2_env(&self) -> crate::nfqws2::plan::Env {
-        // Lua-скрипты: явный BCW_LUA_DIR, затем рядом с движком, затем
-        // <zapret_base>/lua. Движок дропает привилегии до nobody — каталог
-        // обязан быть читаемым им (Android-модули: копия в /data/local/tmp).
-        let lua_dir = std::env::var("BCW_LUA_DIR")
-            .ok()
-            .filter(|p| !p.is_empty())
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                let engine_dir = std::path::Path::new(&self.nfqws2_path)
-                    .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| std::path::PathBuf::from(&self.zapret_base));
-                [engine_dir, std::path::Path::new(&self.zapret_base).join("lua")]
-                    .into_iter()
-                    .find(|d| d.join("zapret-lib.lua").is_file())
-                    .unwrap_or_else(|| std::path::Path::new(&self.zapret_base).join("lua"))
-            });
+        // Внешний корпус стратегий (ZDT-D) несёт свои --lua-init в каждом
+        // профиле: BCW_LUA_FILES подавляет встроенный набор. Пустое значение
+        // отключает lua полностью, ":"-разделённый список задаёт свой.
+        let lua: Vec<std::path::PathBuf> = match std::env::var("BCW_LUA_FILES") {
+            Ok(spec) => spec
+                .split(':')
+                .filter(|p| !p.is_empty())
+                .map(std::path::PathBuf::from)
+                .collect(),
+            Err(_) => {
+                // Lua-скрипты: явный BCW_LUA_DIR, затем рядом с движком, затем
+                // <zapret_base>/lua. Движок дропает привилегии до nobody — каталог
+                // обязан быть читаемым им (Android-модули: копия в /data/local/tmp).
+                let lua_dir = std::env::var("BCW_LUA_DIR")
+                    .ok()
+                    .filter(|p| !p.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| {
+                        let engine_dir = std::path::Path::new(&self.nfqws2_path)
+                            .parent()
+                            .map(|p| p.to_path_buf())
+                            .unwrap_or_else(|| std::path::PathBuf::from(&self.zapret_base));
+                        [engine_dir, std::path::Path::new(&self.zapret_base).join("lua")]
+                            .into_iter()
+                            .find(|d| d.join("zapret-lib.lua").is_file())
+                            .unwrap_or_else(|| std::path::Path::new(&self.zapret_base).join("lua"))
+                    });
+                vec![lua_dir.join("zapret-lib.lua").into(), lua_dir.join("zapret-antidpi.lua").into()]
+            }
+        };
+        // Оркестратор (nfqws-tester) запускает движок под root — на Android
+        // никто-режим не нужен и ломает чтение root-путей модуля.
+        let uid = env_uid("BCW_ENGINE_UID").unwrap_or(self.nfqws2_uid);
+        let gid = env_uid("BCW_ENGINE_GID").unwrap_or(self.nfqws2_gid);
         crate::nfqws2::plan::Env {
             binary: self.nfqws2_path.clone().into(),
-            lua: vec![
-                lua_dir.join("zapret-lib.lua").into(),
-                lua_dir.join("zapret-antidpi.lua").into(),
-            ],
-            uid: self.nfqws2_uid,
-            gid: self.nfqws2_gid,
+            lua,
+            uid,
+            gid,
         }
     }
+}
+
+fn env_uid(key: &str) -> Option<u32> {
+    std::env::var(key).ok().and_then(|v| v.trim().parse().ok())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
